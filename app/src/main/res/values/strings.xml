@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Anime4K Screen</string>
+    <string name="start_upscale">启动超分</string>
+    <string name="stop_upscale">停止超分</string>
+    <string name="overlay_permission">需要悬浮窗权限</string>
+    <string name="notification_channel">Anime4K Screen Service</string>
+    <string name="notification_title">Anime4K 屏幕超分运行中</string>
+    <string name="notification_text">正在实时处理屏幕画面</string>
+    <string name="strength_label">超分强度</string>
+    <string name="scale_label">捕获缩放</string>
+    <string name="opacity_label">叠加层透明度</string>
+    <string name="pseudo_mv_label">伪运动矢量插值 (Pseudo-MV)</string>
+    <string name="float_button_stop">停止服务</string>
+    <string name="float_button_home">返回主界面</string>
+</resources>

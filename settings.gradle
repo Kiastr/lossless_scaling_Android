@@ -1,0 +1,2 @@
+rootProject.name = 'Anime4KScreen'
+include ':app'

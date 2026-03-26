@@ -1,0 +1,385 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF121212">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:gravity="center_horizontal">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Anime4K Screen"
+            android:textSize="28sp"
+            android:textColor="#FF03DAC5"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="8dp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="实时屏幕超分辨率增强 (FSR 1.0 版)"
+            android:textSize="14sp"
+            android:textColor="#AAFFFFFF"
+            android:layout_marginBottom="32dp"/>
+
+        <!-- Status Card -->
+        <androidx.cardview.widget.CardView
+            xmlns:app="http://schemas.android.com/apk/res-auto"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="#FF1E1E1E"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="状态"
+                    android:textSize="12sp"
+                    android:textColor="#88FFFFFF"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"/>
+
+                <TextView
+                    android:id="@+id/statusText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="已停止"
+                    android:textSize="18sp"
+                    android:textColor="#FFFFFFFF"
+                    android:layout_marginTop="4dp"/>
+
+                <TextView
+                    android:id="@+id/fpsText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="FPS: --"
+                    android:textSize="14sp"
+                    android:textColor="#88FFFFFF"
+                    android:layout_marginTop="4dp"/>
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- Settings Card -->
+        <androidx.cardview.widget.CardView
+            xmlns:app="http://schemas.android.com/apk/res-auto"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="#FF1E1E1E"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="设置"
+                    android:textSize="12sp"
+                    android:textColor="#88FFFFFF"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"/>
+
+                <!-- Capture Scale -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/scale_label"
+                    android:textSize="14sp"
+                    android:textColor="#CCFFFFFF"
+                    android:layout_marginTop="12dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <SeekBar
+                        android:id="@+id/scaleSeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:min="10"
+                        android:max="100"
+                        android:progress="50"
+                        android:progressTint="#FF03DAC5"
+                        android:thumbTint="#FF03DAC5"/>
+
+                    <TextView
+                        android:id="@+id/scaleValue"
+                        android:layout_width="48dp"
+                        android:layout_height="wrap_content"
+                        android:text="50%"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFFFF"
+                        android:gravity="end"/>
+                </LinearLayout>
+
+                <!-- FSR Toggle -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="12dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="启用 AMD FSR 1.0 (取代 Anime4K)"
+                        android:textSize="14sp"
+                        android:textColor="#CCFFFFFF"/>
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/fsrSwitch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="false"/>
+                </LinearLayout>
+
+                <!-- FSR Sharpness (Only visible when FSR is on, but we keep it for simplicity) -->
+                <TextView
+                    android:id="@+id/fsrSharpnessLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="FSR 锐化强度"
+                    android:textSize="14sp"
+                    android:textColor="#CCFFFFFF"
+                    android:layout_marginTop="12dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <SeekBar
+                        android:id="@+id/fsrSharpnessSeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:min="0"
+                        android:max="100"
+                        android:progress="20"
+                        android:progressTint="#FF03DAC5"
+                        android:thumbTint="#FF03DAC5"/>
+
+                    <TextView
+                        android:id="@+id/fsrSharpnessValue"
+                        android:layout_width="48dp"
+                        android:layout_height="wrap_content"
+                        android:text="0.20"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFFFF"
+                        android:gravity="end"/>
+                </LinearLayout>
+
+                <!-- Refine Strength (Anime4K) -->
+                <TextView
+                    android:id="@+id/strengthLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/strength_label"
+                    android:textSize="14sp"
+                    android:textColor="#CCFFFFFF"
+                    android:layout_marginTop="12dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <SeekBar
+                        android:id="@+id/strengthSeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:min="0"
+                        android:max="100"
+                        android:progress="50"
+                        android:progressTint="#FF03DAC5"
+                        android:thumbTint="#FF03DAC5"/>
+
+                    <TextView
+                        android:id="@+id/strengthValue"
+                        android:layout_width="48dp"
+                        android:layout_height="wrap_content"
+                        android:text="0.50"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFFFF"
+                        android:gravity="end"/>
+                </LinearLayout>
+
+                <!-- Pseudo-MV Interpolation -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/pseudo_mv_label"
+                    android:textSize="14sp"
+                    android:textColor="#CCFFFFFF"
+                    android:layout_marginTop="12dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <SeekBar
+                        android:id="@+id/pseudoMVSeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:min="0"
+                        android:max="100"
+                        android:progress="50"
+                        android:progressTint="#FF03DAC5"
+                        android:thumbTint="#FF03DAC5"/>
+
+                    <TextView
+                        android:id="@+id/pseudoMVValue"
+                        android:layout_width="48dp"
+                        android:layout_height="wrap_content"
+                        android:text="0.50"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFFFF"
+                        android:gravity="end"/>
+                </LinearLayout>
+
+                <!-- Float Button Toggle -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="12dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="显示悬浮控制按钮"
+                        android:textSize="14sp"
+                        android:textColor="#CCFFFFFF"/>
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/floatButtonSwitch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true"/>
+                </LinearLayout>
+
+                <!-- Overlay Opacity -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/opacity_label"
+                    android:textSize="14sp"
+                    android:textColor="#CCFFFFFF"
+                    android:layout_marginTop="12dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <SeekBar
+                        android:id="@+id/opacitySeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:min="0"
+                        android:max="100"
+                        android:progress="100"
+                        android:progressTint="#FF03DAC5"
+                        android:thumbTint="#FF03DAC5"/>
+
+                    <TextView
+                        android:id="@+id/opacityValue"
+                        android:layout_width="56dp"
+                        android:layout_height="wrap_content"
+                        android:text="100%"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFFFF"
+                        android:gravity="end"/>
+                </LinearLayout>
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- Start/Stop Button -->
+        <com.google.android.material.button.MaterialButton
+            xmlns:app="http://schemas.android.com/apk/res-auto"
+            android:id="@+id/toggleButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="启动超分"
+            android:textSize="16sp"
+            app:cornerRadius="12dp"
+            android:backgroundTint="#FF6200EE"
+            android:layout_marginTop="8dp"/>
+
+        <!-- Info Card -->
+        <androidx.cardview.widget.CardView
+            xmlns:app="http://schemas.android.com/apk/res-auto"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="#FF1E1E1E"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="24dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="使用说明"
+                    android:textSize="12sp"
+                    android:textColor="#88FFFFFF"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="1. 点击「启动超分」按钮\n2. 授予屏幕录制和悬浮窗权限\n3. 应用将在全屏叠加层上显示超分后的画面\n4. 开启 FSR 开关后，将使用 AMD FSR 1.0 算法，其在保持锐利度的同时比 Anime4K 更节省资源\n5. 使用悬浮按钮快速开关超分效果\n6. 长按悬浮按钮可停止服务或返回主界面\n7. 通过通知栏或返回本应用停止\n\n基于 Anime4K 算法 (MIT License)\n接入 AMD FSR 1.0 算法 (MIT License)"
+                    android:textSize="13sp"
+                    android:textColor="#AAFFFFFF"
+                    android:lineSpacingExtra="4dp"
+                    android:layout_marginTop="8dp"/>
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+    </LinearLayout>
+</ScrollView>
