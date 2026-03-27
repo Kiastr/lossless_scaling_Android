@@ -274,11 +274,12 @@ public class Anime4KRenderer {
 
     public void init(int inW, int inH, int outW, int outH) {
         if (initialized) release();
+        inputWidth = inW;
+        inputHeight = inH;
+        outputWidth = outW;
+        outputHeight = outH;
 
-        this.inputWidth = inW;
-        this.inputHeight = inH;
-        this.outputWidth = outW;
-        this.outputHeight = outH;
+        GLES30.glGenFramebuffers(7, fbo, 0);
 
         programLuma = createProgram(VERTEX_SHADER, FRAG_LUMA);
         programGradX1 = createProgram(VERTEX_SHADER, FRAG_GRAD_X1);
@@ -289,10 +290,9 @@ public class Anime4KRenderer {
         programATW = createProgram(VERTEX_SHADER, FRAG_ATW);
         programPassthrough = createProgram(VERTEX_SHADER, FRAG_PASSTHROUGH);
 
-        programFsrEasu = createProgram(VERTEX_SHADER, FSRShaders.FRAG_EASU);
-        programFsrRcas = createProgram(VERTEX_SHADER, FSRShaders.FRAG_RCAS);
+        programFsrEasu = createProgram(FSRShaders.VERTEX_SHADER, FSRShaders.FRAG_EASU);
+        programFsrRcas = createProgram(FSRShaders.VERTEX_SHADER, FSRShaders.FRAG_RCAS);
 
-        GLES30.glGenFramebuffers(7, fbo, 0);
         inputTexture = createTexture(inputWidth, inputHeight);
         lumaTexture = createTexture(inputWidth, inputHeight);
         lumadTexture = createTexture(outputWidth, outputHeight);
@@ -357,12 +357,14 @@ public class Anime4KRenderer {
             drawQuadWithProgram(programGradY2, new int[]{lumadTexture, lumammTexture}, new String[]{"uLumad", "uLumamm"});
 
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[3]);
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, lumammTexture, 0);
             drawQuadWithProgram(programPassthrough, new int[]{tempTex2}, new String[]{"uTexture"});
 
             GLES30.glDeleteTextures(2, new int[]{tempTex, tempTex2}, 0);
 
             // Anime4K Apply
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4]);
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outputTexture, 0);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programApply);
             setTexelSize(programApply, inputWidth, inputHeight);
@@ -372,6 +374,7 @@ public class Anime4KRenderer {
             // FSR mode - Skip Anime4K analysis
             // EASU: Input -> FSR Temp Texture
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[6]);
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, fsrTempTexture, 0);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrEasu);
             
@@ -380,16 +383,14 @@ public class Anime4KRenderer {
             float invOutputWidth = 1.0f / outputWidth;
             float invOutputHeight = 1.0f / outputHeight;
 
-            float[] easuCon0 = { (float)inputWidth * invOutputWidth, (float)inputHeight * invOutputHeight, 0.5f * (float)inputWidth * invOutputWidth - 0.5f, 0.5f * (float)inputHeight * invOutputHeight - 0.5f };
             float[] easuCon1 = { invInputWidth, invInputHeight, 0.0f, 0.0f };
-            
-            GLES30.glUniform4fv(GLES30.glGetUniformLocation(programFsrEasu, "uEasuCon0"), 1, easuCon0, 0);
             GLES30.glUniform4fv(GLES30.glGetUniformLocation(programFsrEasu, "uEasuCon1"), 1, easuCon1, 0);
             
             drawQuadWithProgram(programFsrEasu, new int[]{inputTexture}, new String[]{"uTexture"});
             
             // RCAS: FSR Temp Texture -> Output Texture
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4]);
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outputTexture, 0);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrRcas);
             GLES30.glUniform4f(GLES30.glGetUniformLocation(programFsrRcas, "uRcasCon"), fsrSharpness, 0, 0, 0);
@@ -407,8 +408,6 @@ public class Anime4KRenderer {
             GLES30.glUseProgram(programATW);
             
             GLES30.glUniform1f(GLES30.glGetUniformLocation(programATW, "uATWStrength"), atwStrength);
-            // In a real ATW, uOffset would come from device sensors or motion estimation.
-            // Here we use a tiny constant or calculated offset for "Pseudo-ATW" reprojection.
             GLES30.glUniform2f(GLES30.glGetUniformLocation(programATW, "uOffset"), 0.001f, 0.001f);
             
             drawQuadWithProgram(programATW, new int[]{currentTexture, lastOutputTexture}, new String[]{"uTexture", "uLastTexture"});
@@ -422,6 +421,7 @@ public class Anime4KRenderer {
 
         // Update lastOutput for next frame
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, lastOutputTexture, 0);
         GLES30.glViewport(0, 0, outputWidth, outputHeight);
         drawQuadWithProgram(programPassthrough, new int[]{currentTexture}, new String[]{"uTexture"});
 

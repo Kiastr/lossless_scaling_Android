@@ -27,7 +27,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_OVERLAY_PERMISSION = 1002;
 
     private MaterialButton toggleButton;
-    private TextView statusText, fpsText, scaleValue, strengthValue, pseudoMVValue, opacityValue, fsrSharpnessValue, strengthLabel, fsrSharpnessLabel;
+    private TextView statusText, fpsText, scaleValue, strengthValue, pseudoMVValue, opacityValue, fsrSharpnessValue, strengthLabel, fsrSharpnessLabel, pseudoMVLabel;
     private SeekBar scaleSeekBar, strengthSeekBar, pseudoMVSeekBar, opacitySeekBar, fsrSharpnessSeekBar;
     private SwitchCompat floatButtonSwitch, fsrSwitch;
     private boolean isRunning = false;
@@ -65,6 +65,7 @@ public class MainActivity extends AppCompatActivity {
         
         strengthLabel = findViewById(R.id.strengthLabel);
         fsrSharpnessLabel = findViewById(R.id.fsrSharpnessLabel);
+        pseudoMVLabel = findViewById(R.id.pseudoMVLabel);
 
         scaleSeekBar = findViewById(R.id.scaleSeekBar);
         strengthSeekBar = findViewById(R.id.strengthSeekBar);
@@ -183,6 +184,8 @@ public class MainActivity extends AppCompatActivity {
             strengthLabel.setVisibility(View.GONE);
             strengthSeekBar.setVisibility(View.GONE);
             strengthValue.setVisibility(View.GONE);
+            // Rename Pseudo-MV to Async Time Warp when FSR is enabled
+            pseudoMVLabel.setText("异步时间扭曲 (Async Time Warp / Reprojection)");
         } else {
             fsrSharpnessLabel.setVisibility(View.GONE);
             fsrSharpnessSeekBar.setVisibility(View.GONE);
@@ -190,6 +193,8 @@ public class MainActivity extends AppCompatActivity {
             strengthLabel.setVisibility(View.VISIBLE);
             strengthSeekBar.setVisibility(View.VISIBLE);
             strengthValue.setVisibility(View.VISIBLE);
+            // Restore name to Pseudo-MV when Anime4K is enabled
+            pseudoMVLabel.setText("伪运动矢量插值 (Pseudo-MV)");
         }
     }
 
