@@ -406,7 +406,21 @@ public class OverlayService extends Service {
         popup.getMenu().add(0, 3, 0, "打开主界面");
         popup.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
-                case 1: isPaused = !isPaused; applyOverlayOpacity(); return true;
+                case 1: 
+                    isPaused = !isPaused; 
+                    if (isPaused) {
+                        // 暂停时将叠加层透明度设为 0，隐藏最后一帧
+                        mainHandler.post(() -> {
+                            if (overlaySurfaceView != null && overlayParams != null) {
+                                overlayParams.alpha = 0.0f;
+                                windowManager.updateViewLayout(overlaySurfaceView, overlayParams);
+                            }
+                        });
+                    } else {
+                        // 恢复时重新应用用户设置的透明度
+                        applyOverlayOpacity();
+                    }
+                    return true;
                 case 2: stopSelf(); return true;
                 case 3: Intent intent = new Intent(this, MainActivity.class); intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(intent); return true;
             }
