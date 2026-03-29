@@ -750,10 +750,11 @@ public class Anime4KRenderer {
             }
 
         } else {
-            // ---- FSR 管线 ----
-            // [FIX-v1.9.3] 强制清空 FBO，防止 Alpha/颜色值跨帧累积导致失真
+            // ---- FSR 管线 (v1.9.6 深度重置版) ----
+            
+            // 1. EASU: 边缘重建 (Input -> fsrTempTexture)
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[6]);
-            GLES30.glClearColor(0f, 0f, 0f, 0f);
+            GLES30.glClearColor(0f, 0f, 0f, 1f); // 强制 Alpha=1.0 初始状态
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrEasu);
@@ -762,8 +763,9 @@ public class Anime4KRenderer {
             GLES30.glUniform4fv(uEasu_con1, 1, easuCon1, 0);
             drawQuad();
 
+            // 2. MAS: 自适应锐化 (fsrTempTexture -> outputTexture)
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4]);
-            GLES30.glClearColor(0f, 0f, 0f, 0f);
+            GLES30.glClearColor(0f, 0f, 0f, 1f); // 再次重置，防止 Ping-Pong 交换后的残留
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrRcas);
@@ -772,9 +774,12 @@ public class Anime4KRenderer {
             drawQuad();
             currentTexture = outputTexture;
 
-            // FSR 模式：ATW 插帧
+            // 3. 插帧处理 (Pseudo-MV / ATW)
             if (pmvStrength > 0.01f) {
+                // 插帧模式：输出到 lastOutputTexture
                 GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
+                GLES30.glClearColor(0f, 0f, 0f, 1f);
+                GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
                 GLES30.glViewport(0, 0, outputWidth, outputHeight);
                 GLES30.glUseProgram(programATW);
                 bindTex(0, currentTexture);    GLES30.glUniform1i(uATW_texture,     0);
@@ -782,7 +787,8 @@ public class Anime4KRenderer {
                 GLES30.glUniform1f(uATW_strength, pmvStrength);
                 GLES30.glUniform2f(uATW_offset, 0.001f, 0.001f);
                 drawQuad();
-                // ping-pong
+                
+                // Ping-Pong 交换：将当前渲染结果作为下帧的历史参考
                 int tmp = outputTexture;
                 outputTexture     = lastOutputTexture;
                 lastOutputTexture = tmp;
@@ -790,13 +796,10 @@ public class Anime4KRenderer {
                 bindFboTexture(fbo[5], lastOutputTexture);
                 currentTexture = outputTexture;
             } else {
-                // [OPT-G3] 无插帧时用 glBlitFramebuffer 替代 Passthrough draw
-                GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, fbo[4]);
-                GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, fbo[5]);
-                GLES30.glBlitFramebuffer(
-                    0, 0, outputWidth, outputHeight,
-                    0, 0, outputWidth, outputHeight,
-                    GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
+                // 非插帧模式：强制断开反馈链，清空历史参考纹理
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
+                GLES30.glClearColor(0f, 0f, 0f, 1f);
+                GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
                 GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
             }
         }
