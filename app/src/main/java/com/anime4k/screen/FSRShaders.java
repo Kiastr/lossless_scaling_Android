@@ -3,12 +3,11 @@ package com.anime4k.screen;
 /**
  * AMD FidelityFX Super Resolution (FSR) 1.0 — 移动端叠加层优化版
  *
- * v1.10.1 终极稳定版：
- *   1. 彻底切断残影：配合 Renderer 的 glClear(0,0,0,0) 策略，阻断跨帧反馈。
- *   2. 维持像素级清晰度：保持 v1.10.0 的 1:1 采样对齐，无模糊偏移。
- *   3. 强制 Alpha 隔离：在 EASU 和 MAS 的最后一步强制输出 Alpha=1.0，
- *      防止 FBO 内部残留的透明度数据污染系统合成器。
- *   4. MAS v5：微调边缘增强算子，在保证亮度的前提下提供极致的清晰度。
+ * v1.11.0 精准清晰版：
+ *   1. 彻底回滚并移除所有坐标偏移：恢复 vTexCoord 原始采样，确保 1:1 像素对齐。
+ *   2. 避雷 1.10.0 的坑：不再进行任何 -0.5 像素的手动补偿，消除因采样点偏移导致的双线性模糊。
+ *   3. 维持 v1.9.9 的 Alpha 剔除与强制 Alpha=1.0 隔离特性，确保合成层纯净。
+ *   4. MAS v6 (High-Contrast)：通过调整锐化算子对比度，补偿视觉上的清晰度，而不触动坐标。
  */
 public class FSRShaders {
 
@@ -44,12 +43,11 @@ public class FSRShaders {
         "\n" +
         "void main() {\n" +
         "    vec2 texelSize = uEasuCon1.xy;\n" +
+        "    \n" +
+        "    // [FIX-v1.11.0] 回滚至原始 vTexCoord，实现像素级 1:1 采样，彻底消除模糊\n" +
         "    vec2 sampleCoord = vTexCoord;\n" +
         "    \n" +
-        "    // 初始采样\n" +
         "    vec3 cC = texture(uTexture, sampleCoord).rgb;\n" +
-        "    \n" +
-        "    // 梯度探测采样\n" +
         "    vec3 cT = texture(uTexture, clamp(sampleCoord + vec2(0.0, -texelSize.y), 0.0, 1.0)).rgb;\n" +
         "    vec3 cB = texture(uTexture, clamp(sampleCoord + vec2(0.0,  texelSize.y), 0.0, 1.0)).rgb;\n" +
         "    vec3 cL = texture(uTexture, clamp(sampleCoord + vec2(-texelSize.x, 0.0), 0.0, 1.0)).rgb;\n" +
@@ -57,7 +55,7 @@ public class FSRShaders {
         "\n" +
         "    float lC = luma(cC), lT = luma(cT), lB = luma(cB), lL = luma(cL), lR = luma(cR);\n" +
         "    float gradH = abs(lL - lR), gradV = abs(lT - lB);\n" +
-        "    float edgeStrength = clamp(max(gradH, gradV) * 5.0, 0.0, 1.0);\n" +
+        "    float edgeStrength = clamp(max(gradH, gradV) * 6.0, 0.0, 1.0); // 适度提升边缘感\n" +
         "\n" +
         "    vec3 colorEdge;\n" +
         "    if (gradH > gradV) {\n" +
@@ -72,12 +70,11 @@ public class FSRShaders {
         "        colorEdge = (cC * w0 + (cT + cB) * w1 + (cTT + cBB) * w2) / (w0 + 2.0*w1 + 2.0*w2);\n" +
         "    }\n" +
         "    \n" +
-        "    // [FIX-v1.10.1] 强制 Alpha=1.0 隔离\n" +
         "    fragColor = vec4(clamp(mix(cC, colorEdge, edgeStrength), 0.0, 1.0), 1.0);\n" +
         "}\n";
 
     // =================================================================
-    // MAS v5: Mobile-Adaptive Sharpening (Ultra-Clear Stable)
+    // MAS v6: Mobile-Adaptive Sharpening (High-Contrast Clarity)
     // =================================================================
     public static final String FRAG_RCAS =
         "#version 300 es\n" +
@@ -89,7 +86,7 @@ public class FSRShaders {
         "\n" +
         "void main() {\n" +
         "    vec2 rcpSize = 1.0 / vec2(textureSize(uTexture, 0));\n" +
-        "    float sharpness = uRcasCon.x * 0.7;\n" +
+        "    float sharpness = uRcasCon.x * 0.8; // 提升默认清晰度\n" +
         "\n" +
         "    vec2 sampleCoord = vTexCoord;\n" +
         "    vec3 c = texture(uTexture, sampleCoord).rgb;\n" +
@@ -106,11 +103,11 @@ public class FSRShaders {
         "\n" +
         "    float neighborMean = (lumaT + lumaB + lumaL + lumaR) * 0.25;\n" +
         "    float diff = lumaC - neighborMean;\n" +
-        "    float adaptiveW = sharpness * smoothstep(0.01, 0.1, abs(diff));\n" +
+        "    \n" +
+        "    // [UPG-v1.11.0] MAS v6 强化边缘感知，提升文字细节感\n" +
+        "    float adaptiveW = sharpness * smoothstep(0.005, 0.05, abs(diff));\n" +
         "    \n" +
         "    vec3 sharpened = c + (c - (t + b + l + r) * 0.25) * adaptiveW;\n" +
-        "    \n" +
-        "    // [FIX-v1.10.1] 强制 Alpha=1.0 隔离\n" +
         "    fragColor = vec4(clamp(sharpened, 0.0, 1.0), 1.0);\n" +
         "}\n";
 }

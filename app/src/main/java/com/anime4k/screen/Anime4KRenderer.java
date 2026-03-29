@@ -750,11 +750,11 @@ public class Anime4KRenderer {
             }
 
         } else {
-            // ---- FSR 管线 (v1.10.1 终极稳定版) ----
+            // ---- FSR 管线 (v1.11.0 精准清晰版) ----
             
             // 1. EASU: 边缘重建 (Input -> fsrTempTexture)
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[6]);
-            // [FIX-v1.10.1] 重新开启 glClear，但设为全透明 (0,0,0,0) 彻底切断残影反馈链，同时保住亮度
+            // [FIX-v1.11.0] 强制清空 FBO 为全透明，切断跨帧残影反馈链
             GLES30.glClearColor(0f, 0f, 0f, 0f);
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
@@ -797,7 +797,7 @@ public class Anime4KRenderer {
                 bindFboTexture(fbo[5], lastOutputTexture);
                 currentTexture = outputTexture;
             } else {
-                // [FIX-v1.10.1] 非插帧模式：强制清空历史纹理，彻底阻断跨帧反馈
+                // [FIX-v1.11.0] 非插帧模式：强制断开反馈链，清空历史纹理
                 GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
                 GLES30.glClearColor(0f, 0f, 0f, 0f);
                 GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
