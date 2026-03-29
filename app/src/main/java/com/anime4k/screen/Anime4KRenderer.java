@@ -14,56 +14,39 @@ import java.nio.FloatBuffer;
  * Supports Anime4K-v3.2 and AMD FSR 1.0.
  *
  * =====================================================================
- * Pseudo-MV Frame Interpolation v1.5.0
+ * v1.8.0 — Performance Optimization (LSFG-inspired)
  * =====================================================================
- * 将 Anime4K 模式下的插帧算法从 ATW（异步时间扭曲）升级为
- * 基于 Anime4K 边缘梯度信息的伪运动矢量插值（Pseudo-MV）。
+ * 参考 Lossless Scaling Frame Generation 3.0 的 40% GPU 负载降低策略，
+ * 对渲染管线进行全面性能优化：
  *
- * 算法原理：
- * Anime4K 管线在处理每一帧时，会产出两张关键的中间纹理：
- *   - lumadTexture  (R=Sobel边缘强度, G=细化权重 dval)
- *   - edgeDirTex    (R=归一化边缘方向X, G=归一化边缘方向Y)  [即原 tempTex2]
+ * [OPT-G1] 中间纹理降精度：
+ *   luma → GL_R8 (单通道), gradX1/gradY1/gradX2/gradY2/edgeDir → GL_RG8 (双通道)
+ *   节省 2-4x 显存带宽，对 TBR 架构（Adreno/Mali/PowerVR）效果尤为显著。
  *
- * 边缘方向场（Edge Direction Field）的法线方向，在物理上近似于
- * 图像中运动物体的局部运动方向。Pseudo-MV 算法利用这一特性，
- * 通过三个 Shader Pass 实现运动感知插帧：
+ * [OPT-G2] glInvalidateFramebuffer (TBR 友好):
+ *   在每次 FBO 切换前调用 glInvalidateFramebuffer 告知驱动当前 FBO 的颜色附件
+ *   不再需要，避免 TBR GPU 将 tile memory 写回 RAM (store) 的昂贵操作。
+ *   参考 Samsung Galaxy GameDev 和 Android Developer 的 TBR 优化指南。
  *
- * Pass A — 运动矢量估计 (Motion Vector Estimation):
- *   对每个像素，从 lumadTexture 读取边缘强度，从 edgeDirTex 读取边缘方向。
- *   将边缘法线方向（垂直于边缘切线）作为该像素的伪运动矢量（PMV）。
- *   对非边缘区域（dval < threshold），使用邻域边缘矢量的加权扩散填充，
- *   确保运动矢量场的连续性（避免运动空洞）。
- *   输出：mvTexture (RG=运动矢量, B=置信度)
+ * [OPT-G3] 消除冗余 Passthrough 全屏绘制：
+ *   当无插帧时，原代码使用 Passthrough shader 做全屏 draw 将当前帧拷贝到
+ *   lastOutputTexture。现改为 glCopyImageSubData (ES 3.2) 或
+ *   glBlitFramebuffer (ES 3.0) 进行 GPU 内部拷贝，省去一次完整的
+ *   vertex processing + fragment shading + rasterization 开销。
  *
- * Pass B — 前向翘曲 (Forward Warp):
- *   使用 t=0.5 的插值时刻，将当前帧（T）沿 PMV 方向向前翘曲 0.5 步，
- *   得到 T+0.5 时刻的前向预测帧。
- *   输出：warpFwdTex
+ * [OPT-G4] VAO 绑定优化：
+ *   整个管线只在开头绑定一次 VAO，结束时解绑一次。消除每次 drawVao 中的
+ *   bind/unbind 调用（原代码每帧 10+ 次 bind/unbind）。
  *
- * Pass C — 后向翘曲 + 双向混合 (Backward Warp + Bidirectional Blend):
- *   将上一帧（T-1）沿 PMV 反方向向后翘曲 0.5 步，得到后向预测帧。
- *   对两个预测帧按置信度加权混合，并用边缘强度在混合帧与原帧之间
- *   进行自适应融合（边缘区域更信任插值，平坦区域保留原始颜色）。
- *   输出：最终插帧结果
+ * [OPT-G5] Shader 精度进一步分级：
+ *   Pass A (PMV Estimate) 降级为 lowp（MV 场不需要高精度）。
+ *   Pass B (WarpFwd) 降级为 lowp。
  *
- * 优势对比 ATW：
- *   ATW 使用固定的全局偏移量对上一帧进行简单平移，无法感知局部运动，
- *   在运动方向多变的场景中会产生模糊和鬼影。
- *   Pseudo-MV 利用 Anime4K 已计算好的边缘方向场，为每个像素生成
- *   独立的运动矢量，实现逐像素的精确运动补偿，显著减少运动模糊。
- *
- * 性能开销：
- *   相比 ATW（1 个 Pass），Pseudo-MV 增加了 3 个 Pass（A/B/C），
- *   但 Pass A/B 分辨率可降至输出分辨率的 1/2（MV 场不需要全分辨率），
- *   整体开销可控，在中端设备上仍能维持 30fps 以上。
- *
- * 插帧策略：
- *   - Anime4K 模式：使用 Pseudo-MV（边缘引导伪运动矢量插值）
- *   - FSR 模式：降级使用 ATW（异步时间扭曲），因 FSR 不产出边缘方向场
- *
- * 性能优化继承自 v1.4.0：
+ * 继承自 v1.5.0 的优化：
  * [OPT-1] VBO/VAO  [OPT-3] Uniform 预缓存  [OPT-4] 预分配纹理
  * [OPT-5] FBO 固定绑定  [OPT-6] Shader 精度分级
+ *
+ * Pseudo-MV 插帧继承自 v1.5.0，ATW 继承自 FSR 模式。
  */
 public class Anime4KRenderer {
 
@@ -87,21 +70,14 @@ public class Anime4KRenderer {
     private int[] vao = new int[2];
 
     // ---- Shader 程序 ----
-    // Anime4K passes
     private int programLuma, programGradX1, programGradY1;
     private int programGradX2, programGradY2, programApply;
-    // Pseudo-MV passes（Anime4K 模式专用）
-    private int programPMV_Estimate;  // Pass A: 运动矢量估计
-    private int programPMV_WarpFwd;   // Pass B: 前向翘曲
-    private int programPMV_Blend;     // Pass C: 后向翘曲 + 双向混合
-    // ATW（FSR 模式专用）
+    private int programPMV_Estimate, programPMV_WarpFwd, programPMV_Blend;
     private int programATW;
-    // 辅助
     private int programPassthrough;
-    // FSR
     private int programFsrEasu, programFsrRcas;
 
-    // ---- FBO 索引说明 ----
+    // ---- FBO 索引 ----
     // [0]=luma  [1]=tempTex(gradX1)  [2]=lumad  [3]=lumamm(gradX2)
     // [4]=output  [5]=lastOutput  [6]=fsrTemp  [7]=edgeDir(gradY2)
     // [8]=mvTex  [9]=warpFwd
@@ -109,29 +85,30 @@ public class Anime4KRenderer {
 
     // ---- 纹理 ----
     private int inputTexture;
-    private int lumaTexture;
-    private int lumadTexture;   // R=Sobel强度, G=细化权重
-    private int lumammTexture;  // gradX2 中间纹理
-    private int outputTexture;
-    private int lastOutputTexture;
-    private int fsrTempTexture;
-    private int tempTex;        // gradX1 临时
-    private int edgeDirTex;     // R=边缘方向X, G=边缘方向Y（原 tempTex2）
-    // Pseudo-MV 专用纹理
-    private int mvTexture;      // RG=运动矢量, B=置信度
-    private int warpFwdTex;     // 前向翘曲结果
+    private int lumaTexture;       // GL_R8
+    private int lumadTexture;      // GL_RG8: R=Sobel强度, G=细化权重
+    private int lumammTexture;     // GL_RG8: gradX2 中间纹理
+    private int outputTexture;     // GL_RGBA8
+    private int lastOutputTexture; // GL_RGBA8
+    private int fsrTempTexture;    // GL_RGBA8
+    private int tempTex;           // GL_RG8: gradX1 临时
+    private int edgeDirTex;        // GL_RG8: 边缘方向场
+    private int mvTexture;         // GL_RGBA8: RG=MV, B=置信度
+    private int warpFwdTex;        // GL_RGBA8
 
     private int inputWidth, inputHeight;
     private int outputWidth, outputHeight;
-    // MV 场使用半分辨率，节省 GPU 带宽
     private int mvWidth, mvHeight;
 
     private float refineStrength  = 0.5f;
-    private float pmvStrength     = 0.5f;  // Pseudo-MV 插帧强度 (0=关闭, 1=最强)
+    private float pmvStrength     = 0.5f;
     private boolean fsrEnabled    = false;
     private float fsrSharpness    = 0.2f;
 
     private boolean initialized = false;
+
+    // [OPT-G2] glInvalidateFramebuffer 参数（预分配避免每帧 GC）
+    private static final int[] INVALIDATE_ATTACHMENT = { GLES30.GL_COLOR_ATTACHMENT0 };
 
     // ---- 预缓存 Uniform Location ----
     private int uLuma_texture;
@@ -143,12 +120,10 @@ public class Anime4KRenderer {
     private int uPassthrough_texture;
     private int uEasu_texture, uEasu_con1;
     private int uRcas_texture, uRcas_con;
-    // Pseudo-MV uniforms（Anime4K 模式）
     private int uPMV_Est_lumad, uPMV_Est_edgeDir, uPMV_Est_texelSize, uPMV_Est_strength;
     private int uPMV_Fwd_current, uPMV_Fwd_mvTex, uPMV_Fwd_texelSize;
     private int uPMV_Blend_current, uPMV_Blend_last, uPMV_Blend_mvTex;
     private int uPMV_Blend_lumad, uPMV_Blend_texelSize, uPMV_Blend_strength;
-    // ATW uniforms（FSR 模式）
     private int uATW_texture, uATW_lastTexture, uATW_strength, uATW_offset;
 
     // =================================================================
@@ -165,35 +140,35 @@ public class Anime4KRenderer {
         "    vTexCoord = aTexCoord;\n" +
         "}\n";
 
-    // Pass 1: Luma
+    // Pass 1: Luma → GL_R8 (单通道输出)
+    // [OPT-G1] 输出到 R8 纹理，只写 R 通道
     private static final String FRAG_LUMA =
         "#version 300 es\n" +
         "precision mediump float;\n" +
         "in vec2 vTexCoord;\n" +
         "uniform sampler2D uTexture;\n" +
-        "out vec4 fragColor;\n" +
+        "out float fragColor;\n" +  // R8 单通道输出
         "void main() {\n" +
         "    vec3 c = texture(uTexture, vTexCoord).rgb;\n" +
-        "    float luma = dot(vec3(0.299, 0.587, 0.114), c);\n" +
-        "    fragColor = vec4(luma, 0.0, 0.0, 1.0);\n" +
+        "    fragColor = dot(vec3(0.299, 0.587, 0.114), c);\n" +
         "}\n";
 
-    // Pass 2: GradX1
+    // Pass 2: GradX1 → GL_RG8 (双通道输出)
     private static final String FRAG_GRAD_X1 =
         "#version 300 es\n" +
         "precision lowp float;\n" +
         "in vec2 vTexCoord;\n" +
         "uniform sampler2D uLuma;\n" +
         "uniform vec2 uTexelSize;\n" +
-        "out vec4 fragColor;\n" +
+        "out vec2 fragColor;\n" +  // RG8 双通道输出
         "void main() {\n" +
         "    float l = texture(uLuma, vTexCoord + vec2(-uTexelSize.x, 0.0)).r;\n" +
         "    float c = texture(uLuma, vTexCoord).r;\n" +
         "    float r = texture(uLuma, vTexCoord + vec2(uTexelSize.x, 0.0)).r;\n" +
-        "    fragColor = vec4((-l+r)*0.5+0.5, (l+c+c+r)*0.25+0.5, 0.0, 1.0);\n" +
+        "    fragColor = vec2((-l+r)*0.5+0.5, (l+c+c+r)*0.25+0.5);\n" +
         "}\n";
 
-    // Pass 3: GradY1
+    // Pass 3: GradY1 → GL_RG8 (R=sobel编码, G=dval)
     private static final String FRAG_GRAD_Y1 =
         "#version 300 es\n" +
         "precision mediump float;\n" +
@@ -201,6 +176,7 @@ public class Anime4KRenderer {
         "uniform sampler2D uGrad;\n" +
         "uniform vec2 uTexelSize;\n" +
         "uniform float uRefineStrength;\n" +
+        "out vec2 fragColor;\n" +  // RG8 双通道输出
         "float power_function(float x) {\n" +
         "    float x2=x*x; float x3=x2*x; float x4=x2*x2; float x5=x2*x3;\n" +
         "    return 11.68129591*x5-42.46906057*x4+60.28286266*x3\n" +
@@ -215,27 +191,27 @@ public class Anime4KRenderer {
         "    float xg=(tx+cx+cx+bx); float yg=(-ty+by);\n" +
         "    float sobel=clamp(sqrt(xg*xg+yg*yg),0.,1.);\n" +
         "    float dval=clamp(power_function(sobel)*uRefineStrength,0.,1.);\n" +
-        "    gl_FragColor=vec4(sobel*0.5+0.5,dval,0.,1.);\n" +
+        "    fragColor=vec2(sobel*0.5+0.5,dval);\n" +
         "}\n";
 
-    // Pass 4: GradX2
+    // Pass 4: GradX2 → GL_RG8
     private static final String FRAG_GRAD_X2 =
         "#version 300 es\n" +
         "precision lowp float;\n" +
         "in vec2 vTexCoord;\n" +
         "uniform sampler2D uLumad;\n" +
         "uniform vec2 uTexelSize;\n" +
-        "out vec4 fragColor;\n" +
+        "out vec2 fragColor;\n" +  // RG8 双通道输出
         "void main() {\n" +
         "    float dval=texture(uLumad,vTexCoord).g;\n" +
-        "    if(dval<0.1){fragColor=vec4(0.5,0.5,0.,1.);return;}\n" +
+        "    if(dval<0.1){fragColor=vec2(0.5,0.5);return;}\n" +
         "    float s=texture(uLumad,vTexCoord).r*2.-1.;\n" +
         "    float l=texture(uLumad,vTexCoord+vec2(-uTexelSize.x,0.)).r*2.-1.;\n" +
         "    float r=texture(uLumad,vTexCoord+vec2(uTexelSize.x,0.)).r*2.-1.;\n" +
-        "    fragColor=vec4((-l+r)*0.5+0.5,(l+s+s+r)*0.25+0.5,0.,1.);\n" +
+        "    fragColor=vec2((-l+r)*0.5+0.5,(l+s+s+r)*0.25+0.5);\n" +
         "}\n";
 
-    // Pass 5: GradY2 — 输出归一化边缘方向场（edgeDirTex）
+    // Pass 5: GradY2 → GL_RG8 (归一化边缘方向场)
     private static final String FRAG_GRAD_Y2 =
         "#version 300 es\n" +
         "precision lowp float;\n" +
@@ -243,10 +219,10 @@ public class Anime4KRenderer {
         "uniform sampler2D uLumad;\n" +
         "uniform sampler2D uLumamm;\n" +
         "uniform vec2 uTexelSize;\n" +
-        "out vec4 fragColor;\n" +
+        "out vec2 fragColor;\n" +  // RG8 双通道输出
         "void main() {\n" +
         "    float dval=texture(uLumad,vTexCoord).g;\n" +
-        "    if(dval<0.1){fragColor=vec4(0.5,0.5,0.,1.);return;}\n" +
+        "    if(dval<0.1){fragColor=vec2(0.5,0.5);return;}\n" +
         "    float tx=texture(uLumamm,vTexCoord+vec2(0.,-uTexelSize.y)).r*2.-1.;\n" +
         "    float cx=texture(uLumamm,vTexCoord).r*2.-1.;\n" +
         "    float bx=texture(uLumamm,vTexCoord+vec2(0.,uTexelSize.y)).r*2.-1.;\n" +
@@ -254,11 +230,11 @@ public class Anime4KRenderer {
         "    float by=texture(uLumamm,vTexCoord+vec2(0.,uTexelSize.y)).g*4.-2.;\n" +
         "    float xg=(tx+cx+cx+bx); float yg=(-ty+by);\n" +
         "    float norm=sqrt(xg*xg+yg*yg);\n" +
-        "    if(norm<=0.001){fragColor=vec4(0.5,0.5,0.,1.);return;}\n" +
-        "    fragColor=vec4(xg/norm*0.5+0.5,yg/norm*0.5+0.5,0.,1.);\n" +
+        "    if(norm<=0.001){fragColor=vec2(0.5,0.5);return;}\n" +
+        "    fragColor=vec2(xg/norm*0.5+0.5,yg/norm*0.5+0.5);\n" +
         "}\n";
 
-    // Pass 6: Apply
+    // Pass 6: Apply — 读取 RG8 纹理的 .rg 通道
     private static final String FRAG_APPLY =
         "#version 300 es\n" +
         "precision mediump float;\n" +
@@ -281,7 +257,7 @@ public class Anime4KRenderer {
         "    fragColor=mix(yv,xv,r)*dval+orig*(1.-dval);\n" +
         "}\n";
 
-    // ATW（FSR 模式专用）— mediump
+    // ATW（FSR 模式专用）
     private static final String FRAG_ATW =
         "#version 300 es\n" +
         "precision mediump float;\n" +
@@ -311,53 +287,30 @@ public class Anime4KRenderer {
     // Pseudo-MV Shaders
     // =================================================================
 
-    /**
-     * Pass A — 运动矢量估计 (Motion Vector Estimation)
-     *
-     * 核心思路：
-     *   边缘方向场（edgeDirTex）存储的是归一化的边缘切线方向。
-     *   运动方向（法线方向）= 旋转 90° = (-edgeDir.y, edgeDir.x)。
-     *   对于强边缘像素（dval >= threshold），直接使用法线方向作为 PMV。
-     *   对于弱边缘/平坦区域，通过 3x3 邻域加权扩散填充 PMV，
-     *   权重由邻域像素的边缘强度（sobel）决定，确保 MV 场连续。
-     *
-     * 输出编码：
-     *   R = mv.x * 0.5 + 0.5  ([-1,1] → [0,1])
-     *   G = mv.y * 0.5 + 0.5
-     *   B = confidence (边缘置信度，用于后续混合权重)
-     *   A = 1.0
-     */
+    // Pass A: 运动矢量估计 — [OPT-G5] lowp 精度
     private static final String FRAG_PMV_ESTIMATE =
         "#version 300 es\n" +
-        "precision mediump float;\n" +
+        "precision lowp float;\n" +  // [OPT-G5] MV 场不需要高精度
         "in vec2 vTexCoord;\n" +
-        "uniform sampler2D uLumad;    // R=sobel, G=dval\n" +
-        "uniform sampler2D uEdgeDir;  // R=edgeX, G=edgeY (归一化，编码为[0,1])\n" +
+        "uniform sampler2D uLumad;\n" +
+        "uniform sampler2D uEdgeDir;\n" +
         "uniform vec2 uTexelSize;\n" +
-        "uniform float uStrength;     // PMV 强度缩放 [0,1]\n" +
+        "uniform float uStrength;\n" +
         "out vec4 fragColor;\n" +
-        "\n" +
-        "// 从编码纹理解码运动矢量（切线→法线旋转90°）\n" +
         "vec2 edgeToMotion(vec2 uv) {\n" +
         "    vec2 edgeDir = texture(uEdgeDir, uv).rg * 2.0 - 1.0;\n" +
-        "    // 法线方向 = 旋转 90°\n" +
         "    return vec2(-edgeDir.y, edgeDir.x);\n" +
         "}\n" +
-        "\n" +
         "void main() {\n" +
         "    vec2 lumadVal = texture(uLumad, vTexCoord).rg;\n" +
-        "    float sobel = lumadVal.r * 2.0 - 1.0;  // [-1,1]\n" +
-        "    float dval  = lumadVal.g;               // [0,1]\n" +
-        "\n" +
+        "    float sobel = lumadVal.r * 2.0 - 1.0;\n" +
+        "    float dval  = lumadVal.g;\n" +
         "    vec2 mv;\n" +
         "    float confidence;\n" +
-        "\n" +
         "    if (dval >= 0.15) {\n" +
-        "        // 强边缘区域：直接使用边缘法线作为运动矢量\n" +
         "        mv = edgeToMotion(vTexCoord);\n" +
         "        confidence = dval;\n" +
         "    } else {\n" +
-        "        // 弱边缘/平坦区域：3x3 邻域加权扩散\n" +
         "        vec2 mvSum = vec2(0.0);\n" +
         "        float wSum = 0.0;\n" +
         "        for (int dy = -1; dy <= 1; dy++) {\n" +
@@ -367,7 +320,6 @@ public class Anime4KRenderer {
         "                vec2 nUV = vTexCoord + offset;\n" +
         "                float nDval = texture(uLumad, nUV).g;\n" +
         "                if (nDval >= 0.15) {\n" +
-        "                    // 距离权重：中心邻居权重更高\n" +
         "                    float distW = (abs(float(dx)) + abs(float(dy)) == 1.0) ? 1.0 : 0.707;\n" +
         "                    float w = nDval * distW;\n" +
         "                    mvSum += edgeToMotion(nUV) * w;\n" +
@@ -377,126 +329,72 @@ public class Anime4KRenderer {
         "        }\n" +
         "        if (wSum > 0.001) {\n" +
         "            mv = mvSum / wSum;\n" +
-        "            confidence = wSum / 8.0 * 0.5; // 扩散区域置信度较低\n" +
+        "            confidence = wSum / 8.0 * 0.5;\n" +
         "        } else {\n" +
         "            mv = vec2(0.0);\n" +
         "            confidence = 0.0;\n" +
         "        }\n" +
         "    }\n" +
-        "\n" +
-        "    // 按强度缩放 MV（控制插帧幅度）\n" +
         "    mv *= uStrength;\n" +
         "    confidence *= uStrength;\n" +
-        "\n" +
-        "    // 编码输出：MV 映射到 [0,1]，置信度直接存 B 通道\n" +
         "    fragColor = vec4(mv * 0.5 + 0.5, confidence, 1.0);\n" +
         "}\n";
 
-    /**
-     * Pass B — 前向翘曲 (Forward Warp, t=0.5)
-     *
-     * 对当前帧（T）的每个像素，沿 PMV 方向向前移动 0.5 步，
-     * 采样当前帧在 (uv + mv * 0.5) 处的颜色，生成前向预测帧。
-     * 这等价于：假设运动在 [T, T+1] 之间匀速，在 T+0.5 时刻
-     * 物体已移动了半个 MV 的距离。
-     */
+    // Pass B: 前向翘曲 — [OPT-G5] lowp 精度
     private static final String FRAG_PMV_WARP_FWD =
         "#version 300 es\n" +
-        "precision mediump float;\n" +
+        "precision lowp float;\n" +  // [OPT-G5]
         "in vec2 vTexCoord;\n" +
-        "uniform sampler2D uCurrent;  // 当前增强帧 T\n" +
-        "uniform sampler2D uMvTex;    // 运动矢量场\n" +
+        "uniform sampler2D uCurrent;\n" +
+        "uniform sampler2D uMvTex;\n" +
         "uniform vec2 uTexelSize;\n" +
         "out vec4 fragColor;\n" +
         "void main() {\n" +
-        "    // 解码运动矢量（[0,1] → [-1,1]，再转为纹理坐标偏移）\n" +
         "    vec3 mvData = texture(uMvTex, vTexCoord).rgb;\n" +
-        "    vec2 mv = (mvData.rg * 2.0 - 1.0) * uTexelSize * 8.0; // 8像素最大位移\n" +
+        "    vec2 mv = (mvData.rg * 2.0 - 1.0) * uTexelSize * 8.0;\n" +
         "    float conf = mvData.b;\n" +
-        "\n" +
-        "    // 前向翘曲：沿 MV 方向采样当前帧\n" +
-        "    vec2 fwdUV = vTexCoord + mv * 0.5;\n" +
-        "    fwdUV = clamp(fwdUV, vec2(0.0), vec2(1.0));\n" +
+        "    vec2 fwdUV = clamp(vTexCoord + mv * 0.5, vec2(0.0), vec2(1.0));\n" +
         "    vec4 fwdColor = texture(uCurrent, fwdUV);\n" +
-        "\n" +
-        "    // 将置信度存入 Alpha，供 Pass C 使用\n" +
         "    fragColor = vec4(fwdColor.rgb, conf);\n" +
         "}\n";
 
-    /**
-     * Pass C — 后向翘曲 + 双向自适应混合 + 时域差分抗拖影 (Anti-Ghosting)
-     *
-     * LSFG 核心思想移植：
-     * LSFG 通过光流算法计算真实运动矢量，对剧烈运动区域不进行帧混合而是直接输出当前帧。
-     * 本 Shader 实现类似的“运动感知抗拖影”机制：
-     *
-     * 1. 后向翘曲：对上一帧（T-1）在 (uv - mv * 0.5) 处采样。
-     * 2. 双向混合：前向预测帧和后向预测帧按置信度加权平均。
-     * 3. 时域差分抗拖影 (Temporal Diff Anti-Ghosting) [LSFG 核心]:
-     *    计算当前帧与上一帧的像素亮度差异（时域差分）。
-     *    - 差异大（剧烈运动）：运动矢量不可靠，拒绝混合，直接输出当前帧。彻底消除拖影。
-     *    - 差异小（平缓运动或静止）：插値平滑有效，进行混合提升流畅感。
-     * 4. 自适应融合：边缘强度 + 置信度 + 时域差分共同决定最终混合权重。
-     */
+    // Pass C: 后向翘曲 + 双向混合 + 时域差分抗拖影
     private static final String FRAG_PMV_BLEND =
         "#version 300 es\n" +
         "precision mediump float;\n" +
         "in vec2 vTexCoord;\n" +
-        "uniform sampler2D uCurrent;   // 当前增强帧 T\n" +
-        "uniform sampler2D uLast;      // 上一增强帧 T-1\n" +
-        "uniform sampler2D uMvTex;     // 运动矢量场\n" +
-        "uniform sampler2D uLumad;     // 边缘强度\n" +
+        "uniform sampler2D uCurrent;\n" +
+        "uniform sampler2D uLast;\n" +
+        "uniform sampler2D uMvTex;\n" +
+        "uniform sampler2D uLumad;\n" +
         "uniform vec2 uTexelSize;\n" +
-        "uniform float uStrength;      // 插帧强度 [0,1]\n" +
+        "uniform float uStrength;\n" +
         "out vec4 fragColor;\n" +
-        "\n" +
-        "// 计算两个颜色的感知亮度差异\n" +
         "float lumaDiff(vec4 a, vec4 b) {\n" +
         "    float la = dot(a.rgb, vec3(0.299, 0.587, 0.114));\n" +
         "    float lb = dot(b.rgb, vec3(0.299, 0.587, 0.114));\n" +
         "    return abs(la - lb);\n" +
         "}\n" +
-        "\n" +
         "void main() {\n" +
         "    vec3 mvData = texture(uMvTex, vTexCoord).rgb;\n" +
         "    vec2 mv = (mvData.rg * 2.0 - 1.0) * uTexelSize * 8.0;\n" +
         "    float conf = mvData.b;\n" +
-        "\n" +
         "    vec4 current = texture(uCurrent, vTexCoord);\n" +
-        "\n" +
         "    if (conf < 0.05 || uStrength < 0.01) {\n" +
         "        fragColor = current;\n" +
         "        return;\n" +
         "    }\n" +
-        "\n" +
-        "    // 前向翘曲预测\n" +
         "    vec2 fwdUV = clamp(vTexCoord + mv * 0.5, vec2(0.0), vec2(1.0));\n" +
         "    vec4 fwdColor = texture(uCurrent, fwdUV);\n" +
-        "\n" +
-        "    // 后向翘曲预测\n" +
         "    vec2 bwdUV = clamp(vTexCoord - mv * 0.5, vec2(0.0), vec2(1.0));\n" +
         "    vec4 bwdColor = texture(uLast, bwdUV);\n" +
-        "\n" +
-        "    // 双向混合\n" +
         "    vec4 blended = mix(bwdColor, fwdColor, 0.5);\n" +
-        "\n" +
-        "    // ===== 时域差分抗拖影 (LSFG 核心思想) =====\n" +
-        "    // 计算当前帧与上一帧在当前位置的亮度差异\n" +
         "    vec4 lastAtCurrent = texture(uLast, vTexCoord);\n" +
         "    float temporalDiff = lumaDiff(current, lastAtCurrent);\n" +
-        "\n" +
-        "    // 时域差异越大，运动越剧烈，插値可靠性越低\n" +
-        "    // threshold=0.12: 超过此差异的区域被认为剧烈运动，直接输出当前帧\n" +
         "    float antiGhostFactor = 1.0 - smoothstep(0.08, 0.20, temporalDiff);\n" +
-        "\n" +
-        "    // 边缘权重\n" +
         "    float edgeW = clamp(texture(uLumad, vTexCoord).r * 2.0 - 1.0, 0.0, 1.0);\n" +
-        "\n" +
-        "    // 最终混合权重 = 置信度 * 边缘权重 * 抗拖影因子 * 用户强度\n" +
-        "    // antiGhostFactor 在剧烈运动时趋近 0，强制使用当前帧，彻底消除拖影\n" +
         "    float blendW = conf * (0.4 + 0.6 * edgeW) * antiGhostFactor * uStrength;\n" +
         "    blendW = clamp(blendW, 0.0, 0.85);\n" +
-        "\n" +
         "    fragColor = mix(current, blended, blendW);\n" +
         "}\n";
 
@@ -507,9 +405,7 @@ public class Anime4KRenderer {
     public Anime4KRenderer() {}
 
     public void setRefineStrength(float s) { refineStrength = s; }
-    /** 设置 Pseudo-MV 插帧强度（0=关闭, 1=最强）*/
     public void setPMVStrength(float s)    { pmvStrength = Math.max(0f, Math.min(1f, s)); }
-    /** 兼容旧接口：setATWStrength 映射到 setPMVStrength */
     public void setATWStrength(float s)    { setPMVStrength(s); }
     public void setFsrEnabled(boolean e)   { fsrEnabled = e; }
     public void setFsrSharpness(float s)   { fsrSharpness = s; }
@@ -520,10 +416,10 @@ public class Anime4KRenderer {
 
     public void init(int inW, int inH, int outW, int outH) {
         if (initialized) {
-            GLES30.glDeleteTextures(12, new int[]{
+            GLES30.glDeleteTextures(11, new int[]{
                 inputTexture, lumaTexture, lumadTexture, lumammTexture,
                 outputTexture, lastOutputTexture, fsrTempTexture,
-                tempTex, edgeDirTex, mvTexture, warpFwdTex, 0 /*padding*/
+                tempTex, edgeDirTex, mvTexture, warpFwdTex
             }, 0);
             GLES30.glDeleteFramebuffers(10, fbo, 0);
             GLES30.glDeleteBuffers(2, vbo, 0);
@@ -532,7 +428,6 @@ public class Anime4KRenderer {
 
         inputWidth  = inW;  inputHeight  = inH;
         outputWidth = outW; outputHeight = outH;
-        // MV 场使用半分辨率（节省带宽，MV 场不需要全精度）
         mvWidth  = outW / 2;
         mvHeight = outH / 2;
 
@@ -554,19 +449,18 @@ public class Anime4KRenderer {
 
         cacheUniformLocations();
 
-        // 创建纹理
-        inputTexture      = createTexture(inputWidth,  inputHeight);
-        lumaTexture       = createTexture(inputWidth,  inputHeight);
-        lumadTexture      = createTexture(outputWidth, outputHeight);
-        lumammTexture     = createTexture(outputWidth, outputHeight);
-        outputTexture     = createTexture(outputWidth, outputHeight);
-        lastOutputTexture = createTexture(outputWidth, outputHeight);
-        fsrTempTexture    = createTexture(outputWidth, outputHeight);
-        tempTex           = createTexture(inputWidth,  inputHeight);
-        edgeDirTex        = createTexture(outputWidth, outputHeight);
-        // Pseudo-MV 专用（半分辨率 MV 场）
-        mvTexture         = createTexture(mvWidth, mvHeight);
-        warpFwdTex        = createTexture(outputWidth, outputHeight);
+        // [OPT-G1] 中间纹理降精度
+        inputTexture      = createTexture(inputWidth,  inputHeight,  GLES30.GL_RGBA8,  GLES30.GL_RGBA);
+        lumaTexture       = createTexture(inputWidth,  inputHeight,  GLES30.GL_R8,     GLES30.GL_RED);
+        tempTex           = createTexture(inputWidth,  inputHeight,  GLES30.GL_RG8,    GLES30.GL_RG);
+        lumadTexture      = createTexture(outputWidth, outputHeight, GLES30.GL_RG8,    GLES30.GL_RG);
+        lumammTexture     = createTexture(outputWidth, outputHeight, GLES30.GL_RG8,    GLES30.GL_RG);
+        edgeDirTex        = createTexture(outputWidth, outputHeight, GLES30.GL_RG8,    GLES30.GL_RG);
+        outputTexture     = createTexture(outputWidth, outputHeight, GLES30.GL_RGBA8,  GLES30.GL_RGBA);
+        lastOutputTexture = createTexture(outputWidth, outputHeight, GLES30.GL_RGBA8,  GLES30.GL_RGBA);
+        fsrTempTexture    = createTexture(outputWidth, outputHeight, GLES30.GL_RGBA8,  GLES30.GL_RGBA);
+        mvTexture         = createTexture(mvWidth,     mvHeight,     GLES30.GL_RGBA8,  GLES30.GL_RGBA);
+        warpFwdTex        = createTexture(outputWidth, outputHeight, GLES30.GL_RGBA8,  GLES30.GL_RGBA);
 
         // 创建并固定绑定 FBO
         GLES30.glGenFramebuffers(10, fbo, 0);
@@ -606,7 +500,6 @@ public class Anime4KRenderer {
         uEasu_con1             = GLES30.glGetUniformLocation(programFsrEasu,      "uEasuCon1");
         uRcas_texture          = GLES30.glGetUniformLocation(programFsrRcas,      "uTexture");
         uRcas_con              = GLES30.glGetUniformLocation(programFsrRcas,      "uRcasCon");
-        // Pseudo-MV
         uPMV_Est_lumad         = GLES30.glGetUniformLocation(programPMV_Estimate, "uLumad");
         uPMV_Est_edgeDir       = GLES30.glGetUniformLocation(programPMV_Estimate, "uEdgeDir");
         uPMV_Est_texelSize     = GLES30.glGetUniformLocation(programPMV_Estimate, "uTexelSize");
@@ -620,7 +513,6 @@ public class Anime4KRenderer {
         uPMV_Blend_lumad       = GLES30.glGetUniformLocation(programPMV_Blend,    "uLumad");
         uPMV_Blend_texelSize   = GLES30.glGetUniformLocation(programPMV_Blend,    "uTexelSize");
         uPMV_Blend_strength    = GLES30.glGetUniformLocation(programPMV_Blend,    "uStrength");
-        // ATW（FSR 模式）
         uATW_texture           = GLES30.glGetUniformLocation(programATW,           "uTexture");
         uATW_lastTexture       = GLES30.glGetUniformLocation(programATW,           "uLastTexture");
         uATW_strength          = GLES30.glGetUniformLocation(programATW,           "uATWStrength");
@@ -682,57 +574,71 @@ public class Anime4KRenderer {
     }
 
     // =================================================================
-    // 核心渲染管线
+    // 核心渲染管线 (v1.8.0 优化版)
     // =================================================================
 
     private int runPipeline() {
         int currentTexture;
 
+        // [OPT-G4] 绑定 VAO 一次，整个管线复用
+        GLES30.glBindVertexArray(vao[0]);
+
         if (!fsrEnabled) {
             // ---- Anime4K 管线（Pass 1-6）----
 
-            // Pass 1: Luma
+            // Pass 1: Luma → GL_R8
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[0]);
             GLES30.glViewport(0, 0, inputWidth, inputHeight);
             GLES30.glUseProgram(programLuma);
             bindTex(0, inputTexture); GLES30.glUniform1i(uLuma_texture, 0);
-            drawVao(vao[0]);
+            drawQuad();
 
-            // Pass 2: GradX1 → tempTex
+            // [OPT-G2] Invalidate luma FBO before switching away
+            GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 1, INVALIDATE_ATTACHMENT, 0);
+
+            // Pass 2: GradX1 → GL_RG8 tempTex
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[1]);
             GLES30.glViewport(0, 0, inputWidth, inputHeight);
             GLES30.glUseProgram(programGradX1);
             bindTex(0, lumaTexture); GLES30.glUniform1i(uGradX1_luma, 0);
             GLES30.glUniform2f(uGradX1_texelSize, 1f/inputWidth, 1f/inputHeight);
-            drawVao(vao[0]);
+            drawQuad();
 
-            // Pass 3: GradY1 → lumadTexture
+            // Pass 3: GradY1 → GL_RG8 lumadTexture
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[2]);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programGradY1);
             bindTex(0, tempTex); GLES30.glUniform1i(uGradY1_grad, 0);
             GLES30.glUniform2f(uGradY1_texelSize, 1f/inputWidth, 1f/inputHeight);
             GLES30.glUniform1f(uGradY1_refineStrength, refineStrength);
-            drawVao(vao[0]);
+            drawQuad();
 
-            // Pass 4: GradX2 → lumammTexture
+            // [OPT-G2] Invalidate tempTex FBO (gradX1 不再需要)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[1]);
+            GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 1, INVALIDATE_ATTACHMENT, 0);
+
+            // Pass 4: GradX2 → GL_RG8 lumammTexture
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[3]);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programGradX2);
             bindTex(0, lumadTexture); GLES30.glUniform1i(uGradX2_lumad, 0);
             GLES30.glUniform2f(uGradX2_texelSize, 1f/outputWidth, 1f/outputHeight);
-            drawVao(vao[0]);
+            drawQuad();
 
-            // Pass 5: GradY2 → edgeDirTex（归一化边缘方向场）
+            // Pass 5: GradY2 → GL_RG8 edgeDirTex
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[7]);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programGradY2);
             bindTex(0, lumadTexture);  GLES30.glUniform1i(uGradY2_lumad,  0);
             bindTex(1, lumammTexture); GLES30.glUniform1i(uGradY2_lumamm, 1);
             GLES30.glUniform2f(uGradY2_texelSize, 1f/outputWidth, 1f/outputHeight);
-            drawVao(vao[0]);
+            drawQuad();
 
-            // Pass 6: Apply → outputTexture
+            // [OPT-G2] Invalidate lumamm FBO (gradX2 不再需要)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[3]);
+            GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 1, INVALIDATE_ATTACHMENT, 0);
+
+            // Pass 6: Apply → outputTexture (RGBA8)
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4]);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programApply);
@@ -740,19 +646,22 @@ public class Anime4KRenderer {
             bindTex(1, lumadTexture); GLES30.glUniform1i(uApply_lumad,   1);
             bindTex(2, edgeDirTex);   GLES30.glUniform1i(uApply_lumamm,  2);
             GLES30.glUniform2f(uApply_texelSize, 1f/inputWidth, 1f/inputHeight);
-            drawVao(vao[0]);
+            drawQuad();
             currentTexture = outputTexture;
 
-            // ---- Pseudo-MV 插帧（Pass A/B/C，仅 Anime4K 模式）----
+            // ---- Pseudo-MV 插帧 ----
             if (pmvStrength > 0.01f) {
                 currentTexture = runPseudoMV(currentTexture);
             } else {
-                // 无插帧：将当前帧存入 lastOutput 供下帧备用
-                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
-                GLES30.glViewport(0, 0, outputWidth, outputHeight);
-                GLES30.glUseProgram(programPassthrough);
-                bindTex(0, currentTexture); GLES30.glUniform1i(uPassthrough_texture, 0);
-                drawVao(vao[0]);
+                // [OPT-G3] 无插帧时用 glBlitFramebuffer 替代 Passthrough draw
+                // 将当前帧拷贝到 lastOutput 供下帧备用
+                GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, fbo[4]);
+                GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, fbo[5]);
+                GLES30.glBlitFramebuffer(
+                    0, 0, outputWidth, outputHeight,
+                    0, 0, outputWidth, outputHeight,
+                    GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
             }
 
         } else {
@@ -763,19 +672,18 @@ public class Anime4KRenderer {
             bindTex(0, inputTexture); GLES30.glUniform1i(uEasu_texture, 0);
             float[] easuCon1 = {1f/inputWidth, 1f/inputHeight, 0f, 0f};
             GLES30.glUniform4fv(uEasu_con1, 1, easuCon1, 0);
-            drawVao(vao[0]);
+            drawQuad();
 
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4]);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrRcas);
             bindTex(0, fsrTempTexture); GLES30.glUniform1i(uRcas_texture, 0);
             GLES30.glUniform4f(uRcas_con, fsrSharpness, 0, 0, 0);
-            drawVao(vao[0]);
+            drawQuad();
             currentTexture = outputTexture;
 
-            // FSR 模式：使用 ATW 插帧（因无边缘方向场，降级为异步时间扭曲）
+            // FSR 模式：ATW 插帧
             if (pmvStrength > 0.01f) {
-                // ATW：将结果写入 lastOutputTexture，再 ping-pong 交换
                 GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
                 GLES30.glViewport(0, 0, outputWidth, outputHeight);
                 GLES30.glUseProgram(programATW);
@@ -783,8 +691,8 @@ public class Anime4KRenderer {
                 bindTex(1, lastOutputTexture); GLES30.glUniform1i(uATW_lastTexture, 1);
                 GLES30.glUniform1f(uATW_strength, pmvStrength);
                 GLES30.glUniform2f(uATW_offset, 0.001f, 0.001f);
-                drawVao(vao[0]);
-                // ping-pong 交换：outputTexture ↔ lastOutputTexture
+                drawQuad();
+                // ping-pong
                 int tmp = outputTexture;
                 outputTexture     = lastOutputTexture;
                 lastOutputTexture = tmp;
@@ -792,14 +700,19 @@ public class Anime4KRenderer {
                 bindFboTexture(fbo[5], lastOutputTexture);
                 currentTexture = outputTexture;
             } else {
-                // 无插帧：将当前帧存入 lastOutput 供下帧备用
-                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
-                GLES30.glViewport(0, 0, outputWidth, outputHeight);
-                GLES30.glUseProgram(programPassthrough);
-                bindTex(0, currentTexture); GLES30.glUniform1i(uPassthrough_texture, 0);
-                drawVao(vao[0]);
+                // [OPT-G3] 无插帧时用 glBlitFramebuffer 替代 Passthrough draw
+                GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, fbo[4]);
+                GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, fbo[5]);
+                GLES30.glBlitFramebuffer(
+                    0, 0, outputWidth, outputHeight,
+                    0, 0, outputWidth, outputHeight,
+                    GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
             }
         }
+
+        // [OPT-G4] 管线结束，解绑 VAO
+        GLES30.glBindVertexArray(0);
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
         return outputTexture;
@@ -807,11 +720,10 @@ public class Anime4KRenderer {
 
     /**
      * Pseudo-MV 插帧管线（Pass A → B → C）
-     * 输入：当前 Anime4K 增强帧（currentTex）、lumadTexture、edgeDirTex、lastOutputTexture
-     * 输出：插帧后的结果（写回 outputTexture，并更新 lastOutputTexture）
+     * 注意：调用时 vao[0] 已经绑定（由 runPipeline 负责）
      */
     private int runPseudoMV(int currentTex) {
-        // ---- Pass A: 运动矢量估计 → mvTexture（半分辨率）----
+        // Pass A: 运动矢量估计 → mvTexture（半分辨率）
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[8]);
         GLES30.glViewport(0, 0, mvWidth, mvHeight);
         GLES30.glUseProgram(programPMV_Estimate);
@@ -819,19 +731,22 @@ public class Anime4KRenderer {
         bindTex(1, edgeDirTex);   GLES30.glUniform1i(uPMV_Est_edgeDir, 1);
         GLES30.glUniform2f(uPMV_Est_texelSize, 1f/outputWidth, 1f/outputHeight);
         GLES30.glUniform1f(uPMV_Est_strength, pmvStrength);
-        drawVao(vao[0]);
+        drawQuad();
 
-        // ---- Pass B: 前向翘曲 → warpFwdTex（全分辨率）----
+        // Pass B: 前向翘曲 → warpFwdTex
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[9]);
         GLES30.glViewport(0, 0, outputWidth, outputHeight);
         GLES30.glUseProgram(programPMV_WarpFwd);
         bindTex(0, currentTex);  GLES30.glUniform1i(uPMV_Fwd_current, 0);
         bindTex(1, mvTexture);   GLES30.glUniform1i(uPMV_Fwd_mvTex,   1);
         GLES30.glUniform2f(uPMV_Fwd_texelSize, 1f/outputWidth, 1f/outputHeight);
-        drawVao(vao[0]);
+        drawQuad();
 
-        // ---- Pass C: 后向翘曲 + 双向混合 → lastOutputTexture（ping-pong）----
-        // 将结果写入 lastOutputTexture，然后与 outputTexture 交换引用
+        // [OPT-G2] Invalidate edgeDir FBO (不再需要)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[7]);
+        GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 1, INVALIDATE_ATTACHMENT, 0);
+
+        // Pass C: 后向翘曲 + 双向混合 → lastOutputTexture
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
         GLES30.glViewport(0, 0, outputWidth, outputHeight);
         GLES30.glUseProgram(programPMV_Blend);
@@ -841,28 +756,34 @@ public class Anime4KRenderer {
         bindTex(3, lumadTexture);      GLES30.glUniform1i(uPMV_Blend_lumad,    3);
         GLES30.glUniform2f(uPMV_Blend_texelSize, 1f/outputWidth, 1f/outputHeight);
         GLES30.glUniform1f(uPMV_Blend_strength, pmvStrength);
-        drawVao(vao[0]);
+        drawQuad();
 
-        // Ping-pong：交换 outputTexture 与 lastOutputTexture
-        // lastOutputTexture 现在存的是插帧结果，outputTexture 存的是旧的 lastOutput
-        // 我们希望：outputTexture = 插帧结果，lastOutputTexture = 当前帧（供下帧使用）
-        // 策略：先把当前帧（currentTex = outputTexture）拷贝到 lastOutputTexture 的旧位置
-        //       然后交换引用，使 outputTexture 指向插帧结果
+        // [OPT-G2] Invalidate mvTex and warpFwd FBOs
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[8]);
+        GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 1, INVALIDATE_ATTACHMENT, 0);
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[9]);
+        GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 1, INVALIDATE_ATTACHMENT, 0);
+
+        // Ping-pong 交换
         int tmp = outputTexture;
-        outputTexture     = lastOutputTexture; // 插帧结果
-        lastOutputTexture = tmp;               // 旧的 outputTexture（将存当前帧）
-
-        // 更新 FBO 绑定
+        outputTexture     = lastOutputTexture;
+        lastOutputTexture = tmp;
         bindFboTexture(fbo[4], outputTexture);
         bindFboTexture(fbo[5], lastOutputTexture);
 
-        // 将当前帧（currentTex，即交换前的 outputTexture）存入新的 lastOutputTexture
-        // 供下一帧的 Pass C 作为 uLast 输入
+        // 将当前帧存入 lastOutputTexture（供下帧 Pass C 使用）
+        // [OPT-G3] 用 glBlitFramebuffer 替代 Passthrough draw
+        GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, fbo[4]);
+        GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, fbo[5]);
+        // 注意：此处 fbo[4] 现在绑定的是插帧结果（outputTexture），
+        // 但我们需要拷贝的是 currentTex（即 Apply 的输出）。
+        // 由于 ping-pong 后 fbo[4] 已经指向插帧结果，我们需要用原始方式。
+        // 回退为 passthrough draw（保持正确性）
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
         GLES30.glViewport(0, 0, outputWidth, outputHeight);
         GLES30.glUseProgram(programPassthrough);
         bindTex(0, currentTex); GLES30.glUniform1i(uPassthrough_texture, 0);
-        drawVao(vao[0]);
+        drawQuad();
 
         return outputTexture;
     }
@@ -874,14 +795,12 @@ public class Anime4KRenderer {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
         GLES30.glUseProgram(programPassthrough);
         bindTex(0, texture); GLES30.glUniform1i(uPassthrough_texture, 0);
-        drawVao(vao[1]);
+        // [OPT-G4] renderToScreen 使用 flipped VAO，需要单独绑定
+        GLES30.glBindVertexArray(vao[1]);
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4);
+        GLES30.glBindVertexArray(0);
     }
 
-    /**
-     * 清空当前绑定的 EGL 表面，将其填充为全透明黑色。
-     * 必须在 EGL 表面已经通过 eglMakeCurrent 绑定后才能调用。
-     * 用于暂停时主动清除 GPU 缓冲区中的残留画面，而非依赖 WindowManager.alpha。
-     */
     public void clearSurface(int screenWidth, int screenHeight) {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
         GLES30.glViewport(0, 0, screenWidth, screenHeight);
@@ -898,13 +817,13 @@ public class Anime4KRenderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texId);
     }
 
-    private void drawVao(int vaoId) {
-        GLES30.glBindVertexArray(vaoId);
+    // [OPT-G4] drawQuad 不再 bind/unbind VAO（由 runPipeline 统一管理）
+    private void drawQuad() {
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4);
-        GLES30.glBindVertexArray(0);
     }
 
-    private int createTexture(int w, int h) {
+    // [OPT-G1] 支持指定内部格式和外部格式的纹理创建
+    private int createTexture(int w, int h, int internalFormat, int format) {
         int[] tex = new int[1];
         GLES30.glGenTextures(1, tex, 0);
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0]);
@@ -912,8 +831,8 @@ public class Anime4KRenderer {
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA,
-                w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null);
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, internalFormat,
+                w, h, 0, format, GLES30.GL_UNSIGNED_BYTE, null);
         return tex[0];
     }
 

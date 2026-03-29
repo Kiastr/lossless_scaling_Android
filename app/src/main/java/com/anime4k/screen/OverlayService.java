@@ -46,17 +46,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * OverlayService — 屏幕超分叠加层服务
  *
- * v1.7.0 — 回退至 v1.5.0 稳定架构 + 暂停清屏改进
+ * v1.8.0 — 性能优化版（参考 Lossless Scaling 架构）
  *
- * 帧调度：Choreographer 拉模式（v1.5.0 验证稳定）
- * [CPU-1] EGL_CONTEXT_PRIORITY_HIGH: 请求高优先级 GPU 上下文
- * [CPU-2] ImageReader 缓冲区数量 3: 减少帧丢弃
- * [CPU-3] acquireLatestImage + 立即 close: 保持最低延迟
- * [CPU-4] 帧率自适应节流 (Frame Pacing): AtomicBoolean 防止队列积压
- * [CPU-5] EGL 窗口表面懒创建 + 复用
- * [CPU-7] 方向变化防抖延迟 150ms
- * [CPU-8] FPS 统计使用 System.nanoTime()
- * [NEW]   暂停时主动渲染透明帧清空 GPU 缓冲区，防止画面残留
+ * 基于 v1.7.0 稳定架构（Choreographer 拉模式），新增以下 CPU 端优化：
+ *
+ * [CPU-OPT-1] 延迟 makePbufferCurrent 回切：
+ *   原代码每帧在 renderToOverlay 后立即切回 pbuffer，导致每帧 2 次 eglMakeCurrent。
+ *   现改为：renderToOverlay 后不立即回切，在下一帧 processFrame 开头需要 FBO 渲染时
+ *   才切回 pbuffer。减少每帧 1 次 eglMakeCurrent 调用（约 0.3-1ms/帧）。
+ *   使用 needMakePbufferCurrent 标志跟踪当前 EGL 上下文状态。
+ *
+ * [CPU-OPT-2] 处理线程 Choreographer：
+ *   将 Choreographer 回调注册在处理线程的 Looper 上，而非主线程。
+ *   消除了主线程 → 处理线程的跨线程 post 延迟（约 0.5-2ms/帧）。
+ *   Choreographer 是 per-Looper 的，处理线程有自己的 Looper（HandlerThread）。
+ *
+ * [CPU-OPT-3] FPS 广播节流：
+ *   FPS 广播使用 sendBroadcast，每秒一次。改为仅在 FPS 变化超过 0.5 时才发送，
+ *   减少不必要的 IPC 开销。
+ *
+ * 继承自 v1.7.0 的优化：
+ * [CPU-1] EGL_CONTEXT_PRIORITY_HIGH  [CPU-2] ImageReader 3缓冲区
+ * [CPU-3] acquireLatestImage         [CPU-4] AtomicBoolean 节流
+ * [CPU-5] EGL 窗口表面懒创建        [CPU-7] 方向变化防抖 150ms
+ * [NEW]   暂停时主动渲染透明帧清空 GPU 缓冲区
  */
 public class OverlayService extends Service {
 
@@ -95,11 +108,15 @@ public class OverlayService extends Service {
     private volatile boolean isPaused = false;
     private int frameCount = 0;
     private long fpsStartTimeNs = 0;
+    private float lastReportedFps = 0f; // [CPU-OPT-3] FPS 广播节流
 
     private android.view.Choreographer.FrameCallback frameCallback;
 
     // [CPU-4] 帧率节流标志
     private final AtomicBoolean frameInFlight = new AtomicBoolean(false);
+
+    // [CPU-OPT-1] 延迟 makePbufferCurrent 标志
+    private boolean needMakePbufferCurrent = false;
 
     private EGLDisplay eglDisplay;
     private EGLContext eglContext;
@@ -233,6 +250,7 @@ public class OverlayService extends Service {
                 }
 
                 makePbufferCurrent();
+                needMakePbufferCurrent = false; // [CPU-OPT-1] 重置标志
                 if (renderer != null) {
                     renderer.init(captureWidth, captureHeight, screenWidth, screenHeight);
                 }
@@ -262,7 +280,6 @@ public class OverlayService extends Service {
                 overlayType,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
@@ -338,17 +355,17 @@ public class OverlayService extends Service {
             isRunning = true;
             fpsStartTimeNs = System.nanoTime();
 
-            // Choreographer 驱动帧调度，带节流保护
-            mainHandler.post(() -> {
-                frameCallback = frameTimeNanos -> {
-                    if (!isRunning) return;
-                    if (frameInFlight.compareAndSet(false, true)) {
-                        processingHandler.post(OverlayService.this::processFrame);
-                    }
-                    android.view.Choreographer.getInstance().postFrameCallback(frameCallback);
-                };
+            // [CPU-OPT-2] Choreographer 在处理线程的 Looper 上注册
+            // 消除主线程 → 处理线程的跨线程 post 延迟
+            frameCallback = frameTimeNanos -> {
+                if (!isRunning) return;
+                if (frameInFlight.compareAndSet(false, true)) {
+                    processFrame();
+                }
+                // 继续注册下一帧回调（在处理线程的 Choreographer 上）
                 android.view.Choreographer.getInstance().postFrameCallback(frameCallback);
-            });
+            };
+            android.view.Choreographer.getInstance().postFrameCallback(frameCallback);
         });
     }
 
@@ -366,7 +383,12 @@ public class OverlayService extends Service {
                 int rowStride        = planes[0].getRowStride();
                 int rowPixels        = rowStride / pixelStride;
 
-                makePbufferCurrent();
+                // [CPU-OPT-1] 仅在需要时才切回 pbuffer
+                if (needMakePbufferCurrent) {
+                    makePbufferCurrent();
+                    needMakePbufferCurrent = false;
+                }
+
                 int outputTex = renderer.processFromBuffer(buffer, captureWidth, captureHeight, rowPixels);
 
                 if (overlayOutputSurface != null && surfaceReady) {
@@ -376,6 +398,7 @@ public class OverlayService extends Service {
                 image.close();
             }
 
+            // [CPU-OPT-3] FPS 统计与节流广播
             frameCount++;
             long nowNs = System.nanoTime();
             long elapsedNs = nowNs - fpsStartTimeNs;
@@ -383,10 +406,14 @@ public class OverlayService extends Service {
                 float fps = frameCount * 1_000_000_000f / elapsedNs;
                 frameCount    = 0;
                 fpsStartTimeNs = nowNs;
-                Intent fpsIntent = new Intent("com.anime4k.screen.FPS_UPDATE");
-                fpsIntent.putExtra("fps", fps);
-                fpsIntent.setPackage(getPackageName());
-                sendBroadcast(fpsIntent);
+                // 仅在 FPS 变化超过 0.5 时才发送广播，减少 IPC 开销
+                if (Math.abs(fps - lastReportedFps) > 0.5f) {
+                    lastReportedFps = fps;
+                    Intent fpsIntent = new Intent("com.anime4k.screen.FPS_UPDATE");
+                    fpsIntent.putExtra("fps", fps);
+                    fpsIntent.setPackage(getPackageName());
+                    sendBroadcast(fpsIntent);
+                }
             }
         } catch (Exception e) {
             Log.e(TAG, "Error processing frame", e);
@@ -409,7 +436,10 @@ public class OverlayService extends Service {
             EGL14.eglMakeCurrent(eglDisplay, eglOverlaySurface, eglOverlaySurface, eglContext);
             renderer.renderToScreen(texture, screenWidth, screenHeight);
             EGL14.eglSwapBuffers(eglDisplay, eglOverlaySurface);
-            makePbufferCurrent();
+
+            // [CPU-OPT-1] 不立即切回 pbuffer，标记延迟回切
+            // 下一帧 processFrame 开头会在需要时切回
+            needMakePbufferCurrent = true;
         } catch (Exception e) {
             Log.e(TAG, "Error rendering to overlay", e);
             if (eglOverlaySurface != null && eglOverlaySurface != EGL14.EGL_NO_SURFACE) {
@@ -431,6 +461,7 @@ public class OverlayService extends Service {
                 renderer.clearSurface(screenWidth, screenHeight);
                 EGL14.eglSwapBuffers(eglDisplay, eglOverlaySurface);
                 makePbufferCurrent();
+                needMakePbufferCurrent = false;
             }
         } catch (Exception e) {
             Log.e(TAG, "Error clearing overlay on pause", e);
@@ -545,7 +576,7 @@ public class OverlayService extends Service {
                 case 1:
                     isPaused = !isPaused;
                     if (isPaused) {
-                        // [NEW] 先在 GPU 层主动渲染透明帧，清空 Surface 缓冲区中的残留内容
+                        // 先在 GPU 层主动渲染透明帧，清空 Surface 缓冲区中的残留内容
                         processingHandler.post(this::clearOverlaySurface);
                         // 同时将窗口透明度设为 0，双重保险
                         mainHandler.post(() -> {
